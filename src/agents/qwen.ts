@@ -1,0 +1,132 @@
+import { isAgentAction } from "@/engine/environment";
+import type { AgentAction } from "@/engine/types";
+import type { AgentContext, AgentDecision, AIProvider } from "./provider";
+import { buildSystemPrompt, buildUserPrompt } from "./prompts";
+
+/**
+ * QwenProvider — OpenAI-compatible chat completions.
+ * SERVER-SIDE ONLY: the API key is read from process.env and never
+ * shipped to the browser. The frontend calls /api/agent, which uses
+ * this provider.
+ */
+
+export interface QwenConfig {
+  apiKey: string;
+  model: string;
+  baseURL: string;
+}
+
+export function qwenConfigFromEnv(): QwenConfig | null {
+  const apiKey = process.env.QWEN_API_KEY;
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    model: process.env.QWEN_MODEL || "qwen-plus",
+    baseURL: process.env.QWEN_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  };
+}
+
+const MAX_FORMAT_RETRIES = 2;
+
+export class QwenProvider implements AIProvider {
+  readonly kind = "qwen" as const;
+  readonly model: string;
+  private config: QwenConfig;
+
+  constructor(config: QwenConfig) {
+    this.config = config;
+    this.model = config.model;
+  }
+
+  async generateAction(ctx: AgentContext): Promise<AgentDecision> {
+    let formatErrors = 0;
+    const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+      { role: "system", content: buildSystemPrompt() },
+      { role: "user", content: buildUserPrompt(ctx) },
+    ];
+
+    for (let attempt = 0; attempt <= MAX_FORMAT_RETRIES; attempt++) {
+      const text = await this.chat(messages);
+      const parsed = parseAction(text);
+      if (parsed) {
+        return { action: parsed, formatErrors };
+      }
+      formatErrors += 1;
+      // Feed the format error back and retry (max 2 retries).
+      messages.push({ role: "assistant", content: text });
+      messages.push({
+        role: "user",
+        content:
+          "FORMAT ERROR: your last reply was not a single valid JSON action object. Reply again with EXACTLY one JSON object: {\"action\": ..., \"target\": ..., \"value\": ... | null, \"reason\": ...}. No prose, no code fences.",
+      });
+    }
+
+    // Exhausted retries — return a safe no-op inspection so the run can continue.
+    const firstObj = ctx.observation.visible_objects[0];
+    return {
+      action: {
+        action: "inspect",
+        target: firstObj?.id ?? ctx.observation.doors[0]?.id ?? "door",
+        value: null,
+        reason: "Model produced invalid format twice; falling back to a safe inspection.",
+      },
+      formatErrors,
+    };
+  }
+
+  private async chat(
+    messages: { role: string; content: string }[]
+  ): Promise<string> {
+    const res = await fetch(`${this.config.baseURL.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.config.model,
+        messages,
+        temperature: 0.3,
+        max_tokens: 512,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Qwen API error ${res.status}: ${body.slice(0, 300)}`);
+    }
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    return data.choices?.[0]?.message?.content ?? "";
+  }
+}
+
+/** Extract a valid AgentAction from raw model text (tolerates code fences / prose). */
+export function parseAction(text: string): AgentAction | null {
+  const candidates: string[] = [];
+  // fenced json blocks
+  const fence = /```(?:json)?\s*([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  while ((m = fence.exec(text)) !== null) candidates.push(m[1]);
+  candidates.push(text);
+  // innermost {...} spans
+  const brace = /\{[\s\S]*?\}/g;
+  while ((m = brace.exec(text)) !== null) candidates.push(m[0]);
+
+  for (const c of candidates) {
+    try {
+      const obj = JSON.parse(c.trim());
+      if (isAgentAction(obj)) {
+        return {
+          action: obj.action,
+          target: obj.target,
+          value: obj.value ?? null,
+          reason: obj.reason ?? null,
+        };
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
