@@ -12,7 +12,7 @@ import {
   reportToMarkdown,
 } from "@/lib/exportBenchmark";
 import { formatDuration } from "@/engine/replay";
-import { runEpisode } from "@/engine/episode";
+import { runEpisode, shouldSaveEpisode } from "@/engine/episode";
 import { ROOMS } from "@/data/rooms";
 import { RemoteQwenProvider } from "@/agents/remote";
 import type { AIProvider } from "@/agents/provider";
@@ -28,6 +28,7 @@ interface SuiteState {
   total: number;
   completed: number;
   model?: string;
+  suiteId?: string;
   currentRoom?: string;
   currentRun?: string;
   currentStep?: number;
@@ -37,6 +38,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function runTypeOf(r: RunRecord): RunType {
   return r.runType ?? (r.agent === "qwen" ? "benchmark" : r.agent === "mock" ? "demo" : "human");
+}
+
+function suiteIdOf(r: RunRecord): string | null {
+  return r.metadata.suiteId ?? r.suiteId ?? null;
 }
 
 /* ── aggregation that never throws (used for every filter tab) ── */
@@ -50,7 +55,7 @@ interface AggStats {
   meanActions: number;
   invalidRate: number;
   repeatedRate: number;
-  selfCorrRate: number;
+  selfCorrRate: number | null;
   infoEff: number;
   exploreEff: number;
   criticalRate: number;
@@ -73,10 +78,9 @@ function aggregate(runs: RunRecord[]): AggStats | null {
   const invalid = runs.reduce((a, r) => a + r.metrics.invalidActions, 0);
   const repeated = runs.reduce((a, r) => a + r.metrics.repeatedActions, 0);
   const selfCorr = runs.reduce((a, r) => a + r.metrics.selfCorrections, 0);
-  const failureEvents = runs.reduce(
-    (a, r) => a + r.steps.filter((s) => !s.response.success || s.response.criticalMistake).length,
-    0
-  );
+  // Recoverable opportunities: failures the agent actually had a chance to
+  // react to. Rate is null (N/A) when zero — no opportunity is not a weakness.
+  const opportunities = runs.reduce((a, r) => a + (r.metrics.selfCorrectionOpportunities ?? 0), 0);
   const formatErrors = runs.reduce((a, r) => a + r.metrics.formatErrors, 0);
   const escaped = runs.filter((r) => r.metrics.success).length;
   const criticalRuns = runs.filter((r) => r.metrics.criticalMistakes > 0).length;
@@ -110,11 +114,11 @@ function aggregate(runs: RunRecord[]): AggStats | null {
     meanActions: r2(mean(runs.map((r) => r.metrics.actions))),
     invalidRate: totalActions ? r2(invalid / totalActions) : 0,
     repeatedRate: totalActions ? r2(repeated / totalActions) : 0,
-    selfCorrRate: failureEvents ? r2(selfCorr / failureEvents) : 0,
+    selfCorrRate: opportunities > 0 ? r2(selfCorr / opportunities) : null,
     infoEff: r2(mean(runs.map((r) => r.metrics.informationEfficiency))),
     exploreEff: r2(mean(runs.map((r) => r.metrics.explorationEfficiency))),
     criticalRate: r2(criticalRuns / runs.length),
-    formatRel: r2(1 - formatErrors / Math.max(1, totalActions)),
+    formatRel: Math.max(0, Math.min(1, r2(1 - formatErrors / Math.max(1, totalActions)))),
     byRoom,
   };
 }
@@ -123,6 +127,7 @@ export default function BenchmarkPage() {
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [filter, setFilter] = useState<Filter>("benchmark");
+  const [suiteSel, setSuiteSel] = useState<string | "manual" | null>(null); // null = auto (latest)
   const [runsPerRoom, setRunsPerRoom] = useState(5);
   const [suite, setSuite] = useState<SuiteState>({ phase: "idle", total: 0, completed: 0 });
 
@@ -134,8 +139,32 @@ export default function BenchmarkPage() {
     setLoaded(true);
   }, []);
 
-  const filtered = useMemo(() => runs.filter((r) => runTypeOf(r) === filter), [runs, filter]);
   const benchmarkRuns = useMemo(() => runs.filter((r) => runTypeOf(r) === "benchmark"), [runs]);
+
+  // ── suite selection: official view / report / export always scope to ONE suite ──
+  const suiteList = useMemo(() => {
+    const map = new Map<string | null, { count: number; latest: number }>();
+    for (const r of benchmarkRuns) {
+      const sid = suiteIdOf(r);
+      const e = map.get(sid) ?? { count: 0, latest: 0 };
+      e.count += 1;
+      e.latest = Math.max(e.latest, r.timestamp);
+      map.set(sid, e);
+    }
+    return [...map.entries()].sort((a, b) => b[1].latest - a[1].latest);
+  }, [benchmarkRuns]);
+  const effectiveSuite = useMemo(() => {
+    if (suiteSel !== null) return suiteSel === "manual" ? null : suiteSel;
+    return suiteList.length ? suiteList[0][0] : null; // default: latest suite
+  }, [suiteSel, suiteList]);
+  const scopedBenchmark = useMemo(
+    () => benchmarkRuns.filter((r) => suiteIdOf(r) === effectiveSuite),
+    [benchmarkRuns, effectiveSuite]
+  );
+  const filtered = useMemo(
+    () => (filter === "benchmark" ? scopedBenchmark : runs.filter((r) => runTypeOf(r) === filter)),
+    [runs, filter, scopedBenchmark]
+  );
   const counts = useMemo(
     () => ({
       benchmark: runs.filter((r) => runTypeOf(r) === "benchmark").length,
@@ -147,25 +176,25 @@ export default function BenchmarkPage() {
   const stats = useMemo(() => aggregate(filtered), [filtered]);
   const newestFirst = useMemo(() => [...filtered].sort((a, b) => b.timestamp - a.timestamp), [filtered]);
 
-  // Official report: only ever built from benchmark runs; null (with a notice)
-  // when the data would produce an invalid report (e.g. multiple models mixed).
+  // Official report: only ever built from benchmark runs of the SELECTED suite;
+  // null (with a notice) when the data would produce an invalid report.
   const reportError = useMemo(() => {
-    if (benchmarkRuns.length === 0) return null;
+    if (scopedBenchmark.length === 0) return null;
     try {
-      buildReport(benchmarkRuns);
+      buildReport(scopedBenchmark);
       return null;
     } catch (e) {
       return e instanceof Error ? e.message : "Report error";
     }
-  }, [benchmarkRuns]);
+  }, [scopedBenchmark]);
   const report = useMemo(() => {
-    if (benchmarkRuns.length === 0 || reportError) return null;
+    if (scopedBenchmark.length === 0 || reportError) return null;
     try {
-      return buildReport(benchmarkRuns);
+      return buildReport(scopedBenchmark);
     } catch {
       return null;
     }
-  }, [benchmarkRuns, reportError]);
+  }, [scopedBenchmark, reportError]);
   const analysis = useMemo(() => (report ? analyze(report) : null), [report]);
 
   /* ── benchmark suite runner (Qwen only — never falls back to demo agent) ── */
@@ -194,7 +223,9 @@ export default function BenchmarkPage() {
     }
 
     const total = ROOMS.length * runsPerRoom;
-    setSuite({ phase: "running", total, completed: 0, model });
+    // one unique suiteId per START click — all official runs of this suite share it
+    const suiteId = `suite_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    setSuite({ phase: "running", total, completed: 0, model, suiteId });
     let completed = 0;
     let cancelled = false;
 
@@ -222,14 +253,19 @@ export default function BenchmarkPage() {
             runType: "benchmark",
             modelLabel: `Qwen · ${model}`,
             runId: newRunId(),
+            suiteId,
             stepDelayMs: 200,
             shouldStop: () => cancelRef.current,
             onStep: (step) => setSuite((s) => ({ ...s, currentStep: step.step })),
           });
-          saveRun(result.run);
-          setRuns(loadRuns());
-          completed += 1;
-          setSuite((s) => ({ ...s, completed }));
+          // CANCEL guard: a cancelled episode is partial data — it is never
+          // saved, never counted as completed, and never reaches a report.
+          if (shouldSaveEpisode(result)) {
+            saveRun(result.run);
+            setRuns(loadRuns());
+            completed += 1;
+            setSuite((s) => ({ ...s, completed }));
+          }
           if (result.cancelled) {
             cancelled = true;
             break outer;
@@ -250,10 +286,12 @@ export default function BenchmarkPage() {
         }
       }
     }
+    if (!cancelled) setSuiteSel(suiteId); // automatically view the suite just completed
     setSuite((s) => ({
       ...s,
       phase: cancelled ? "cancelled" : "done",
       completed,
+      suiteId,
       currentRoom: undefined,
       currentRun: undefined,
     }));
@@ -274,7 +312,8 @@ export default function BenchmarkPage() {
 
   function exportReport(kind: "json" | "md" | "csv") {
     try {
-      const rep = buildReport(benchmarkRuns); // throws on demo/human or mixed models
+      // single suite only — buildReport throws on demo/human, mixed models or mixed suites
+      const rep = buildReport(scopedBenchmark);
       if (kind === "json") downloadFile("benchmark-report.json", reportToJSON(rep), "application/json");
       else if (kind === "md") downloadFile("benchmark-report.md", reportToMarkdown(rep), "text/markdown");
       else downloadFile("benchmark-summary.csv", reportToCSV(rep), "text/csv");
@@ -332,6 +371,7 @@ export default function BenchmarkPage() {
               if (window.confirm("Delete ALL locally stored runs (benchmark, demo and human)?")) {
                 clearRuns();
                 setRuns([]);
+                setSuiteSel(null);
               }
             }}
             disabled={runs.length === 0 || suiteBusy}
@@ -362,6 +402,25 @@ export default function BenchmarkPage() {
             {f === "benchmark" ? "Official Benchmark" : f === "demo" ? "Demo (MockAgent)" : "Human"} · {counts[f]}
           </button>
         ))}
+        {filter === "benchmark" && suiteList.length > 0 && (
+          <label className="ml-auto flex items-center gap-2 text-[10px] tracking-[0.2em] text-lab-dim uppercase">
+            Suite:
+            <select
+              value={effectiveSuite === null ? "manual" : effectiveSuite}
+              onChange={(e) => setSuiteSel(e.target.value === "manual" ? "manual" : e.target.value)}
+              disabled={suiteBusy}
+              className="border border-lab-line2 bg-lab-bg px-2 py-1 text-[10px] tracking-[0.1em] text-lab-text normal-case focus:border-lab-green/60 focus:outline-none disabled:opacity-40"
+            >
+              {suiteList.map(([sid, info]) => (
+                <option key={sid ?? "manual"} value={sid ?? "manual"}>
+                  {sid
+                    ? `${sid} · ${info.count} run${info.count === 1 ? "" : "s"} · ${new Date(info.latest).toLocaleString()}`
+                    : `Manual runs (no suite) · ${info.count}`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       {/* benchmark suite runner */}
@@ -417,7 +476,7 @@ export default function BenchmarkPage() {
                 <span className="anim-dot">●</span> {suite.phase === "paused" ? "PAUSED" : "RUNNING"} · {suite.currentRoom} · run {suite.currentRun} · step {suite.currentStep ?? 0}
               </span>
               <span className="text-lab-dim">
-                {suite.completed} / {suite.total} complete{suite.model ? ` · ${suite.model}` : ""}
+                {suite.completed} / {suite.total} complete{suite.model ? ` · ${suite.model}` : ""}{suite.suiteId ? ` · ${suite.suiteId}` : ""}
               </span>
             </div>
             <div className="mt-2 h-1.5 w-full border border-lab-line2 bg-lab-bg">
@@ -433,12 +492,12 @@ export default function BenchmarkPage() {
         )}
         {suite.phase === "done" && (
           <div className="border-t border-lab-green/40 px-4 py-3 text-[11px] tracking-[0.2em] text-lab-green uppercase">
-            ✓ Suite complete — {suite.completed} official benchmark run{suite.completed === 1 ? "" : "s"} recorded
+            ✓ Suite {suite.suiteId} complete — {suite.completed} official benchmark run{suite.completed === 1 ? "" : "s"} recorded
           </div>
         )}
         {suite.phase === "cancelled" && (
           <div className="border-t border-lab-amber/40 px-4 py-3 text-[11px] tracking-[0.2em] text-lab-amber uppercase">
-            Cancelled — {suite.completed} completed run(s) were kept
+            Cancelled — {suite.completed} completed run(s) were kept · the in-progress partial run was DISCARDED (never saved as benchmark data)
           </div>
         )}
       </div>
@@ -488,7 +547,11 @@ export default function BenchmarkPage() {
               <Tile k="Mean Actions" v={stats.meanActions.toFixed(1)} />
               <Tile k="Invalid Rate" v={`${Math.round(stats.invalidRate * 100)}%`} warn={stats.invalidRate > 0.08} />
               <Tile k="Repeat Rate" v={`${Math.round(stats.repeatedRate * 100)}%`} warn={stats.repeatedRate > 0.08} />
-              <Tile k="Self-Corr" v={`${Math.round(stats.selfCorrRate * 100)}%`} />
+              <Tile
+                k="Self-Corr"
+                v={stats.selfCorrRate === null ? "N/A" : `${Math.round(stats.selfCorrRate * 100)}%`}
+                sub={stats.selfCorrRate === null ? "no opportunities" : undefined}
+              />
               <Tile k="Info Eff" v={`${Math.round(stats.infoEff * 100)}%`} />
               <Tile k="Explore Eff" v={`${Math.round(stats.exploreEff * 100)}%`} />
               <Tile k="Critical Rate" v={`${Math.round(stats.criticalRate * 100)}%`} warn={stats.criticalRate >= 0.3} />
@@ -497,7 +560,10 @@ export default function BenchmarkPage() {
 
             <div className="grid gap-4 lg:grid-cols-3">
               <div className="border border-lab-line bg-lab-panel lg:col-span-2">
-                <SectionTitle>Room Results · multi-run aggregates ({filter})</SectionTitle>
+                <SectionTitle>
+                  Room Results · multi-run aggregates ({filter}
+                  {filter === "benchmark" ? ` · suite: ${effectiveSuite ?? "manual"}` : ""})
+                </SectionTitle>
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="border-b border-lab-line text-[10px] tracking-[0.2em] text-lab-dim uppercase">
@@ -661,7 +727,7 @@ function Radar({ stats }: { stats: AggStats }) {
     { label: "INFO EFF", v: stats.infoEff },
     { label: "EXPLORE", v: stats.exploreEff },
     { label: "COMPLIANCE", v: 1 - stats.invalidRate },
-    { label: "SELF-CORR", v: stats.selfCorrRate },
+    { label: "SELF-CORR", v: stats.selfCorrRate ?? 0 },
     { label: "FORMAT", v: stats.formatRel },
   ];
   const N = axes.length;

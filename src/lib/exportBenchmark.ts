@@ -28,6 +28,14 @@ export function buildReport(runs: RunRecord[]): BenchmarkReport {
   if (uniquePrompt.length > 1 || uniqueBench.length > 1) {
     throw new Error("Cannot mix runs from different benchmark/prompt versions in one report");
   }
+  const uniqueSuites = [...new Set(runs.map((r) => r.metadata.suiteId ?? r.suiteId ?? null))];
+  if (uniqueSuites.length > 1) {
+    throw new Error(
+      `Cannot mix runs from different benchmark suites in one report (found: ${uniqueSuites
+        .map((s) => s ?? "manual")
+        .join(", ")})`
+    );
+  }
 
   const totalRuns = runs.length;
   const successfulRuns = runs.filter((r) => r.metrics.success).length;
@@ -36,10 +44,8 @@ export function buildReport(runs: RunRecord[]): BenchmarkReport {
   const invalid = runs.reduce((a, r) => a + r.metrics.invalidActions, 0);
   const repeated = runs.reduce((a, r) => a + r.metrics.repeatedActions, 0);
   const selfCorr = runs.reduce((a, r) => a + r.metrics.selfCorrections, 0);
-  const failureEvents = runs.reduce(
-    (a, r) => a + r.steps.filter((s) => !s.response.success || s.response.criticalMistake).length,
-    0
-  );
+  // recoverable opportunities: failures the agent actually had a chance to react to
+  const opportunities = runs.reduce((a, r) => a + (r.metrics.selfCorrectionOpportunities ?? 0), 0);
   const criticalRuns = runs.filter((r) => r.metrics.criticalMistakes > 0).length;
   const formatErrors = runs.reduce((a, r) => a + r.metrics.formatErrors, 0);
   const scores = runs.map((r) => r.score.total);
@@ -76,6 +82,7 @@ export function buildReport(runs: RunRecord[]): BenchmarkReport {
     promptVersion: runs[0].metadata.promptVersion,
     provider: runs[0].metadata.provider,
     model: uniqueModels[0],
+    suiteId: uniqueSuites[0],
     timestamp: new Date().toISOString(),
     summary: {
       rooms,
@@ -91,15 +98,21 @@ export function buildReport(runs: RunRecord[]): BenchmarkReport {
       median_actions: round(median(actions)),
       invalid_action_rate: totalActions ? round(invalid / totalActions) : 0,
       repeated_action_rate: totalActions ? round(repeated / totalActions) : 0,
-      self_correction_rate: failureEvents ? round(selfCorr / failureEvents) : 0,
+      // null (N/A) when no recoverable failure opportunity ever occurred —
+      // absence of evidence is not evidence of weak self-correction
+      self_correction_rate: opportunities > 0 ? round(selfCorr / opportunities) : null,
       information_efficiency: round(mean(runs.map((r) => r.metrics.informationEfficiency))),
       exploration_efficiency: round(mean(runs.map((r) => r.metrics.explorationEfficiency))),
       critical_mistake_rate: round(criticalRuns / totalRuns),
-      format_reliability: round(1 - formatErrors / Math.max(1, totalActions)),
+      format_reliability: clamp01(round(1 - formatErrors / Math.max(1, totalActions))),
       byRoom,
     },
     runs,
   };
+}
+
+function clamp01(x: number): number {
+  return Math.max(0, Math.min(1, x));
 }
 
 function mean(xs: number[]): number {
@@ -135,8 +148,10 @@ export function analyze(report: BenchmarkReport): { strengths: string[]; weaknes
   if (s.format_reliability >= 0.95) strengths.push(`Showed high structured-output reliability ${scope} (format reliability ${pct(s.format_reliability)}).`);
   else weaknesses.push(`Structured-output violations required retries ${scope} (format reliability ${pct(s.format_reliability)}).`);
 
-  if (s.self_correction_rate >= 0.6) strengths.push(`The model often recovered after explicit negative environment feedback ${scope} (self-correction rate ${pct(s.self_correction_rate)}).`);
-  else if (s.self_correction_rate < 0.3) weaknesses.push(`The model rarely recovered after negative feedback ${scope} (self-correction rate ${pct(s.self_correction_rate)}).`);
+  if (s.self_correction_rate === null) {
+    // no recoverable failure opportunity occurred — make NO claim either way
+  } else if (s.self_correction_rate >= 0.6) strengths.push(`The model often recovered after explicit negative environment feedback ${scope} (self-correction rate ${pct(s.self_correction_rate)}).`);
+  else if (s.self_correction_rate < 0.3) weaknesses.push(`The model rarely recovered after negative feedback ${scope} (self-correction rate ${pct(s.self_correction_rate)} of recoverable opportunities).`);
 
   if (s.invalid_action_rate <= 0.05) strengths.push(`Showed low invalid-action rate in this controlled environment (${pct(s.invalid_action_rate)}).`);
   else weaknesses.push(`Elevated invalid-action rate in this controlled environment (${pct(s.invalid_action_rate)}).`);
@@ -176,6 +191,7 @@ export function reportToMarkdown(report: BenchmarkReport): string {
   L.push(`- Prompt Version: **${report.promptVersion}**`);
   L.push(`- Model: **${report.model}**`);
   L.push(`- Provider: **${report.provider}**`);
+  L.push(`- Suite: **${report.suiteId ?? "manual runs (no suite)"}**`);
   L.push(`- Run Count: **${s.totalRuns}** (${s.rooms} rooms)`);
   L.push(`- Timestamp: ${report.timestamp}`);
   L.push("");
@@ -186,7 +202,7 @@ export function reportToMarkdown(report: BenchmarkReport): string {
   L.push(`- Mean Actions: ${s.mean_actions} · Median Actions: ${s.median_actions}`);
   L.push(`- Invalid Action Rate: ${pct(s.invalid_action_rate)}`);
   L.push(`- Repeated Action Rate: ${pct(s.repeated_action_rate)}`);
-  L.push(`- Self-Correction Rate: ${pct(s.self_correction_rate)}`);
+  L.push(`- Self-Correction Rate: ${s.self_correction_rate === null ? "N/A (no recoverable failure opportunities)" : pct(s.self_correction_rate)}`);
   L.push(`- Information Efficiency: ${pct(s.information_efficiency)}`);
   L.push(`- Exploration Efficiency: ${pct(s.exploration_efficiency)}`);
   L.push(`- Critical Mistake Rate: ${pct(s.critical_mistake_rate)}`);

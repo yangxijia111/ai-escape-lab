@@ -32,6 +32,8 @@ export interface EpisodeOptions {
   shouldStop?: () => boolean;
   /** visual pacing delay between steps (ms) */
   stepDelayMs?: number;
+  /** id of the Benchmark Suite execution; null for manual single-room runs */
+  suiteId?: string | null;
 }
 
 export interface EpisodeResult {
@@ -39,8 +41,16 @@ export interface EpisodeResult {
   cancelled: boolean;
 }
 
+/**
+ * Recording guard: a CANCELLED episode is a partial run — it must NEVER be
+ * saved to storage, counted as completed, or allowed into an official report.
+ */
+export function shouldSaveEpisode(result: EpisodeResult): boolean {
+  return !result.cancelled;
+}
+
 export async function runEpisode(opts: EpisodeOptions): Promise<EpisodeResult> {
-  const { room, provider, runType, modelLabel, runId, onStep, shouldStop, stepDelayMs = 0 } = opts;
+  const { room, provider, runType, modelLabel, runId, onStep, shouldStop, stepDelayMs = 0, suiteId = null } = opts;
   const startedAt = Date.now();
   let state = initialState(room);
   let events: string[] = ["You wake up in the room."];
@@ -130,6 +140,7 @@ export async function runEpisode(opts: EpisodeOptions): Promise<EpisodeResult> {
     formatRetries: formatErrors,
     startedAt,
     finishedAt,
+    suiteId,
   };
 
   const run: RunRecord = {
@@ -141,6 +152,7 @@ export async function runEpisode(opts: EpisodeOptions): Promise<EpisodeResult> {
     roomId: room.id,
     roomTitle: room.title,
     timestamp: finishedAt,
+    suiteId,
     metadata,
     metrics,
     score,

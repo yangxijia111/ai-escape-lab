@@ -54,7 +54,21 @@ export function classifyStep(
  *      (a step with state changes, or escape) later in the run
  */
 export function detectSelfCorrections(steps: StepRecord[], window = 4): SelfCorrectionEvent[] {
+  return detectSelfCorrectionStats(steps, window).events;
+}
+
+/**
+ * Same strict detection, additionally counting RECOVERABLE OPPORTUNITIES:
+ * a failure cluster the agent actually had a chance to recover from
+ * (a next step exists after the failure). Used for an honest
+ * self-correction rate: events / opportunities, or N/A when zero.
+ */
+export function detectSelfCorrectionStats(
+  steps: StepRecord[],
+  window = 4
+): { events: SelfCorrectionEvent[]; opportunities: number } {
   const events: SelfCorrectionEvent[] = [];
+  let opportunities = 0;
   const isFailure = (s: StepRecord) => !s.response.success || Boolean(s.response.criticalMistake);
 
   for (let f = 0; f < steps.length; f++) {
@@ -64,7 +78,8 @@ export function detectSelfCorrections(steps: StepRecord[], window = 4): SelfCorr
     if (failed.response.failed && failed.response.invalid) continue;
 
     const next = steps[f + 1];
-    if (!next) continue;
+    if (!next) continue; // run ended on this failure — no chance to recover
+    opportunities += 1;
     const identical = (a: StepRecord, b: StepRecord) =>
       a.action.action === b.action.action &&
       a.action.target === b.action.target &&
@@ -108,7 +123,7 @@ export function detectSelfCorrections(steps: StepRecord[], window = 4): SelfCorr
     // skip past this recovery so one failure yields at most one event
     f = recoveryIdx;
   }
-  return events;
+  return { events, opportunities };
 }
 
 /** @deprecated kept for compatibility — use detectSelfCorrections().length */
@@ -175,7 +190,8 @@ export function computeMetrics(
   const repeatedActions = steps.filter((s) => s.classification === "repeated").length;
   const criticalMistakes = steps.filter((s) => s.response.criticalMistake).length;
   const success = steps.some((s) => s.response.escaped);
-  const selfCorrectionEvents = detectSelfCorrections(steps);
+  const scStats = detectSelfCorrectionStats(steps);
+  const selfCorrectionEvents = scStats.events;
 
   const actionEfficiency = success
     ? Math.min(1, room.optimalActions / Math.max(1, actions))
@@ -198,6 +214,7 @@ export function computeMetrics(
     repeatedActions,
     criticalMistakes,
     selfCorrections: selfCorrectionEvents.length,
+    selfCorrectionOpportunities: scStats.opportunities,
     formatErrors: opts.formatErrors ?? 0,
     hintUsage: opts.hintUsage ?? 0,
     durationMs: opts.durationMs ?? 0,

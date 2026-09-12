@@ -267,6 +267,8 @@ export interface RunMetrics {
   repeatedActions: number;
   criticalMistakes: number;
   selfCorrections: number;
+  /** failures that were followed by at least one step (a chance to recover) */
+  selfCorrectionOpportunities: number;
   formatErrors: number;
   hintUsage: number;
   durationMs: number;
@@ -306,6 +308,8 @@ export interface RunMetadata {
   formatRetries: number;
   startedAt: number;
   finishedAt: number;
+  /** id of the Benchmark Suite execution; null for manual single-room runs */
+  suiteId: string | null;
 }
 
 export interface RunRecord {
@@ -317,6 +321,8 @@ export interface RunRecord {
   roomId: string;
   roomTitle: string;
   timestamp: number;
+  /** mirror of metadata.suiteId for quick access; null/undefined = manual run */
+  suiteId?: string | null;
   metadata: RunMetadata;
   metrics: RunMetrics;
   score: RunScore;
@@ -348,7 +354,8 @@ export interface BenchmarkSummary {
   median_actions: number;
   invalid_action_rate: number;
   repeated_action_rate: number;
-  self_correction_rate: number;
+  /** recoveries / recoverable opportunities; null when there were no opportunities */
+  self_correction_rate: number | null;
   information_efficiency: number;
   exploration_efficiency: number;
   critical_mistake_rate: number;
@@ -362,6 +369,8 @@ export interface BenchmarkReport {
   promptVersion: string;
   provider: AgentKind;
   model: string;
+  /** the single suite this report covers (null = manual runs group) */
+  suiteId: string | null;
   timestamp: string;
   summary: BenchmarkSummary;
   runs: RunRecord[];

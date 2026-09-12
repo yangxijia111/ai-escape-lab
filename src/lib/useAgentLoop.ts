@@ -108,6 +108,9 @@ export function useAgentLoop(opts: LoopOptions): AgentLoop {
         roomId: room.id,
         roomTitle: room.title,
         timestamp: finishedAt,
+        // manual single-room runs never carry a suite id — they cannot mix
+        // into an official Suite report (buildReport enforces one suiteId)
+        suiteId: null,
         metadata: {
           benchmarkVersion: BENCHMARK_VERSION,
           promptVersion: PROMPT_VERSION,
@@ -121,6 +124,7 @@ export function useAgentLoop(opts: LoopOptions): AgentLoop {
           formatRetries: formatErrorsRef.current,
           startedAt: startedAtRef.current,
           finishedAt,
+          suiteId: null,
         },
         metrics,
         score,

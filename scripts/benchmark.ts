@@ -13,14 +13,21 @@
  * 10. Repeating a critical object never inflates Information Efficiency
  * 11. Repeated actions are counted correctly
  * 12. Failure taxonomy basic classification
+ * 13. Cancelled suite episodes are never saved / counted / reported
+ * 14. suiteId isolation: one suite per official report, manual runs never sneak in
+ * 15. Self-correction rate = recoveries / opportunities; N/A (null) when zero opportunities
+ * 16. Format reliability is clamped to [0,1]
  * Exits 1 on any failure.
  */
 import { executeAction, initialState, buildObservation } from "../src/engine/environment.ts";
 import { classifyStep, classifyFailure, computeMetrics, computeScore, computeInformationEfficiency } from "../src/engine/scoring.ts";
 import { scoreDeltaForStep } from "../src/engine/replay.ts";
-import { buildReport } from "../src/lib/exportBenchmark.ts";
+import { runEpisode, shouldSaveEpisode } from "../src/engine/episode.ts";
+import { buildReport, analyze } from "../src/lib/exportBenchmark.ts";
+import { MOCK_SCRIPTS } from "../src/agents/mock.ts";
 import { room01 } from "../src/data/rooms/room01-clockmaker.ts";
 import { room03 } from "../src/data/rooms/room03-liar.ts";
+import { room05 } from "../src/data/rooms/room05-loop.ts";
 
 let failures = 0;
 function check(ok, label) {
@@ -61,8 +68,8 @@ function play(room, lines) {
   return { state, steps };
 }
 
-function mkRun(runType, model, provider, room, steps) {
-  const metrics = computeMetrics(room, steps, { durationMs: 60000 });
+function mkRun(runType, model, provider, room, steps, suiteId = null, formatErrors = 0) {
+  const metrics = computeMetrics(room, steps, { durationMs: 60000, formatErrors });
   return {
     runId: `test_${runType}_${room.id}_${Math.random().toString(36).slice(2, 6)}`,
     benchmark: "AI ESCAPE LAB",
@@ -72,11 +79,13 @@ function mkRun(runType, model, provider, room, steps) {
     roomId: room.id,
     roomTitle: room.title,
     timestamp: Date.now(),
+    suiteId,
     metadata: {
       benchmarkVersion: "test", promptVersion: "test", provider,
       model, temperature: null, maxTokens: null,
       promptTokens: null, completionTokens: null, totalTokens: null,
-      formatRetries: 0, startedAt: Date.now() - 60000, finishedAt: Date.now(),
+      formatRetries: formatErrors, startedAt: Date.now() - 60000, finishedAt: Date.now(),
+      suiteId,
     },
     metrics,
     score: computeScore(room, metrics, steps),
@@ -202,9 +211,88 @@ console.log("\n── failure taxonomy ──");
 // 12d. success → no failure classification
 check(solved.steps.length > 0 && classifyFailure(computeMetrics(room01, solved.steps, {}), solved.steps) === null, "12d. successful run has null failure classification");
 
+console.log("\n── suite cancel & suiteId isolation ──");
+function scriptedProvider(lines) {
+  let i = 0;
+  return {
+    kind: "mock",
+    model: "ScriptedTestProvider",
+    async generateAction() {
+      const action = parse(lines[Math.min(i, lines.length - 1)]);
+      i += 1;
+      return { action, formatErrors: 0 };
+    },
+  };
+}
+// 13. cancelled episodes are partial data — never saved, counted or reported
+{
+  let committed = 0;
+  const partial = await runEpisode({
+    room: room01,
+    provider: scriptedProvider(room01.groundTruthSolution),
+    runType: "benchmark",
+    modelLabel: "Qwen · test",
+    runId: "test_cancel_partial",
+    suiteId: "suite_test",
+    shouldStop: () => committed >= 2,
+    onStep: () => { committed += 1; },
+  });
+  check(partial.cancelled === true && !partial.run.metrics.success, "13a. cancelled episode flagged cancelled and did not escape");
+  check(shouldSaveEpisode(partial) === false, "13b. cancelled episode fails the recording guard (never saved/counted/reported)");
+
+  const full = await runEpisode({
+    room: room01,
+    provider: scriptedProvider(room01.groundTruthSolution),
+    runType: "benchmark",
+    modelLabel: "Qwen · test",
+    runId: "test_cancel_full",
+    suiteId: "suite_test",
+  });
+  check(full.cancelled === false && full.run.metrics.success && shouldSaveEpisode(full), "13c. completed episode passes the recording guard");
+  check(full.run.suiteId === "suite_test" && full.run.metadata.suiteId === "suite_test", "13d. suiteId recorded on RunRecord + RunMetadata");
+}
+// 14. one suite per official report
+{
+  const a1 = mkRun("benchmark", "Qwen · qwen-plus", "qwen", room01, solved.steps, "suite_A");
+  const a2 = mkRun("benchmark", "Qwen · qwen-plus", "qwen", room03, play(room03, room03.groundTruthSolution).steps, "suite_A");
+  const b1 = mkRun("benchmark", "Qwen · qwen-plus", "qwen", room01, solved.steps, "suite_B");
+  const manual = mkRun("benchmark", "Qwen · qwen-plus", "qwen", room01, solved.steps); // suiteId = null
+  check(!throws(() => buildReport([a1, a2])), "14a. same suiteId can share one report");
+  check(throws(() => buildReport([a1, b1])), "14b. different suiteIds cannot mix in one report");
+  check(throws(() => buildReport([a1, manual])), "14c. manual run (null suiteId) cannot sneak into a suite report");
+  check(!throws(() => buildReport([manual])), "14d. manual-only runs can build their own report");
+  check(buildReport([a1, a2]).suiteId === "suite_A", "14e. report carries its suiteId");
+}
+
+console.log("\n── self-correction rate & format reliability ──");
+// 15. rate = recoveries / opportunities; N/A when no opportunity
+{
+  const clean = mkRun("benchmark", "Qwen · qwen-plus", "qwen", room01, solved.steps);
+  check(clean.metrics.selfCorrectionOpportunities === 0, "15a. clean run has zero recovery opportunities");
+  const cleanRep = buildReport([clean]);
+  check(cleanRep.summary.self_correction_rate === null, "15b. summary rate is null (N/A), not 0%, when opportunities === 0");
+  const an = analyze(cleanRep);
+  check(!/self-correction/i.test([...an.strengths, ...an.weaknesses].join(" ")), "15c. analysis makes NO self-correction claim without opportunities");
+
+  const loopSteps = play(room05, MOCK_SCRIPTS["loop"].map((s) => s.action)).steps;
+  const loopRun = mkRun("benchmark", "Qwen · qwen-plus", "qwen", room05, loopSteps);
+  check(
+    loopRun.metrics.selfCorrectionOpportunities >= 1 && loopRun.metrics.selfCorrections >= 1,
+    `15d. error→correction trajectory yields opportunities=${loopRun.metrics.selfCorrectionOpportunities} events=${loopRun.metrics.selfCorrections}`
+  );
+  const loopRate = buildReport([loopRun]).summary.self_correction_rate;
+  check(typeof loopRate === "number" && loopRate > 0 && loopRate <= 1, `15e. rate is a real ratio when opportunities exist (got ${loopRate})`);
+}
+// 16. format reliability clamped
+{
+  const spam = mkRun("benchmark", "Qwen · qwen-plus", "qwen", room01, solved.steps, null, 999);
+  const fr = buildReport([spam]).summary.format_reliability;
+  check(fr >= 0 && fr <= 1, `16. format reliability clamped to [0,1] even with 999 format errors (got ${fr})`);
+}
+
 if (failures > 0) {
   console.error(`\n✗ BENCHMARK TEST FAILURE — ${failures} check(s) failed`);
   process.exit(1);
 }
-console.log("\n✓ BENCHMARK TEST OK — all 12 spec checks passed");
+console.log("\n✓ BENCHMARK TEST OK — all 16 spec checks passed");
 process.exit(0);
