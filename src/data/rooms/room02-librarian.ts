@@ -164,6 +164,11 @@ export const room02: RoomCase = {
   ],
   doors: [{ id: "door", name: "Handle-less door", locked: true, pos: [88, 44] }],
   criticalObjects: ["bookshelf", "globe", "planetary_index", "drawer", "inscription"],
+  evaluation: {
+    criticalObjects: ["bookshelf", "globe", "planetary_index", "drawer"],
+    supportingObjects: ["inscription", "reading_desk"],
+    irrelevantObjects: ["ladder", "lamp"],
+  },
   groundTruthSolution: [
     "inspect bookshelf",
     "inspect inscription",

@@ -36,12 +36,14 @@
 - **实时直播式控制台**：逐步广播 `THOUGHT / ACTION / OBSERVATION`，支持暂停 / 继续 / 单步 / 重置，自动播放按 500–1500 ms 节奏推进。
 - **逐步回放**：`/replay/[runId]` 支持 Prev / Next / Auto Play，查看每一步的观测快照、假设与状态变更。
 - **Benchmark 仪表盘**：总分、逃脱率、无效动作率、重复动作率、自我纠错率、信息效率、格式可靠性；内置轻量 SVG 雷达图 + 分数条 + 分房间结果表。
-- **0–100 六维评分引擎**：Success 40 / Action Efficiency 20 / Information Efficiency 15 / Reasoning Quality 10 / Self-Correction 10 / Rule Compliance 5。
-- **报告导出**：一键导出 `benchmark-report.json` 与 `benchmark-report.md`（含模型、总体结果、规则化优劣势分析、失败用例与完整轨迹）。
+- **0–100 六维评分引擎**：Success 40 / Action Efficiency 20 / Information Efficiency 15 / Self-Correction 10 / Rule Compliance 10 / Exploration Efficiency 5（v1.1 起**不再包含**主观的 Reasoning Quality；`reason` 仅用于回放展示，永不参与评分）。
+- **三类运行严格隔离**：`benchmark`（真实 Qwen）/ `demo`（MockAgent 演示）/ `human`（人类游玩）。Demo 与 Human 记录**永不进入**官方统计、报告与导出，UI 中始终带有 "DEMO RUN — NOT A BENCHMARK RESULT" / "HUMAN RUN" 标识。
+- **官方 Benchmark Suite**：`/benchmark` 页内置正式评测入口（5 房间 × 1/3/5 次，默认 5），支持 START / PAUSE / CANCEL 与实时进度；**仅限 Qwen**，未配置密钥时直接报错，绝不静默回退到 Mock。
+- **报告导出**：一键导出 `benchmark-report.json`、`benchmark-report.md` 与 `benchmark-summary.csv`（每行一个正式 run；含 Benchmark / Prompt 版本、模型、多 run 统计、规则化优劣势分析、失败分类与完整轨迹）。
 - **无密钥降级**：没有 `QWEN_API_KEY` 时自动使用 Demo Mode，产品可完全离线演示。
 - **密钥安全**：API Key 仅由服务端读取，浏览器只调用 `/api/agent`，密钥永不进入客户端产物。
 - **引擎与框架解耦**：密室为**纯声明式数据**（`RoomCase`），Puzzle Engine 不依赖 React，便于扩展新房间。
-- **本地验证脚本**：`scripts/smoke.ts` 校验每个房间的地面真值解可逃脱；`scripts/pipeline.ts` 跑通完整的 Mock 智能体循环 → 指标 → 评分 → 报告导出。
+- **本地验证脚本**：`npm run test:integrity`（泄漏自检：Agent payload 不含任何地面真值字段，初始观测不含密码/答案/映射）；`npm run test:benchmark`（12 项行为检查：房间可解性、run 隔离、评分不受 rationale 影响、失败分类等）；`scripts/smoke.ts` 校验每个房间的地面真值解可逃脱；`scripts/pipeline.ts` 跑通完整的 Mock 智能体循环 → 指标 → 评分 → 报告导出。
 
 ### 演示 / 截图
 
@@ -54,7 +56,7 @@
 | `/` | 实验室风格首页：选择房间、选择模式 |
 | `/room/[id]?mode=ai` | 观看智能体逃脱（实时 THOUGHT / ACTION / OBSERVATION 广播） |
 | `/room/[id]?mode=human` | 自己挑战同一房间，使用相同评分引擎 |
-| `/benchmark` | 评测仪表盘：总分、逃脱率、各类比率、雷达图、分房间表格、JSON / Markdown 导出 |
+| `/benchmark` | 评测仪表盘：Benchmark / Demo / Human 过滤视图、官方 Benchmark Suite、多 run 统计、雷达图、分房间聚合表、失败分类、JSON / Markdown / CSV 导出 |
 | `/replay/[runId]` | 逐步回放：Prev / Next / Auto Play、观测快照、假设、状态变更 |
 
 房间 id：`clockmaker`、`librarian`、`liar`、`red-herring`、`loop`。
@@ -107,6 +109,10 @@ npm start
 
 # 代码检查
 npm run lint
+
+# 评测可信度自检（泄漏边界 + 12 项行为检查）
+npm run test:integrity
+npm run test:benchmark
 ```
 
 **玩法**：
@@ -118,7 +124,7 @@ npm run lint
 
 **智能体交互模型**：
 
-Environment（[environment.ts](./src/engine/environment.ts)）持有智能体无法直接读取的地面真值。每一轮智能体收到一个 `Observation`（可见对象、状态、背包、近期事件、剩余动作数），并必须仅回复**一个**结构化动作：
+Environment（[environment.ts](./src/engine/environment.ts)）持有智能体无法直接读取的地面真值。每一轮智能体只收到一个 **`PublicObservation`**（可见对象及其**公开状态**、背包、近期事件、剩余动作数）+ 公开历史；`rules`、`groundTruthSolution`、`criticalObjects`、隐藏对象、内部 `objectStates` 等**永不进入模型 payload**。例如时钟的内部状态是 "stopped at 10:15"，但 inspect 之前智能体只能看到 "stopped"。智能体必须仅回复**一个**结构化动作：
 
 ```json
 { "action": "input", "target": "safe", "value": "1015", "reason": "The stopped time may encode the combination." }
@@ -148,14 +154,24 @@ Environment（[environment.ts](./src/engine/environment.ts)）持有智能体无
 |---|---|
 | Success（是否逃脱） | 40 |
 | Action Efficiency（相对最优步数） | 20 |
-| Information Efficiency（关键对象占比） | 15 |
-| Reasoning Quality（假设陈述质量，含重复/严重失误扣分） | 10 |
-| Self-Correction（从失败中恢复） | 10 |
-| Rule Compliance（合法动作、格式错误惩罚） | 5 |
+| Information Efficiency（关键对象覆盖率 × 无关噪声惩罚，重复探索不可刷分） | 15 |
+| Self-Correction（严格行为判定：失败 → 不重复原动作 → 新的信息获取或换值重试 → 后续有实际进展） | 10 |
+| Rule Compliance（合法动作、格式错误惩罚） | 10 |
+| Exploration Efficiency（无关 / 重复 / 非法动作占比惩罚） | 5 |
 
-每一步会被分类为 `useful / irrelevant / invalid / repeated`，并检测 critical mistakes 与自我纠错（见 [scoring.ts](./src/engine/scoring.ts)）。
+每一步会被分类为 `useful / irrelevant / invalid / repeated`；critical mistakes、自我纠错事件（`SelfCorrectionEvent`）与失败分类均由规则判定，**不使用 LLM，也不解析 rationale 文本**（见 [scoring.ts](./src/engine/scoring.ts)）。
 
-**Benchmark 汇总指标**：`escape_rate`、`average_score`、`average_actions`、`invalid_action_rate`、`repeated_action_rate`、`self_correction_rate`、`information_efficiency`、`format_reliability`。
+**失败分类（Failure Taxonomy）**：每个失败 run 输出 `primary` + `secondary` 失败类型：`PREMATURE_COMMITMENT · REPEATED_FAILED_ACTION · OVER_EXPLORATION · INVALID_ACTIONS · FORMAT_FAILURE · NO_RECOVERY · ACTION_BUDGET_EXCEEDED · CRITICAL_MISTAKE`。
+
+**Benchmark 汇总指标（多 run）**：`total_runs`、`successful_runs`、`escape_rate`、`mean/median_score`、`mean/median_actions`、`invalid_action_rate`、`repeated_action_rate`、`self_correction_rate`、`information_efficiency`、`exploration_efficiency`、`critical_mistake_rate`、`format_reliability`，并按房间分组（n/N 与逃脱率）。
+
+### 评测可信度（v1.1 加固）
+
+- **观测边界**：`PublicObservation` 是唯一暴露给 Provider 的世界视图；`npm run test:integrity` 会对全部 5 个房间做初始 payload + 完整地面真值轨迹的双重审计（禁止字段、密码、答案、隐藏对象），任何泄漏 → `exit(1)`。
+- **运行类型隔离**：`RunRecord.runType ∈ benchmark | demo | human`；官方报告 `buildReport()` 对 demo/human 与多模型混合**直接抛错**，仪表盘默认只显示 Official Benchmark 视图。
+- **版本化**：每个 run 记录 `benchmarkVersion` 与 `promptVersion`（`src/config/benchmark.ts`、`src/agents/prompts.ts`），报告顶部展示；混合版本的 run 不允许进入同一报告。
+- **真实元数据**：token 用量只在 API 返回时记录，拿不到就写 `null`，**从不估算**。
+- **结论文本克制**：自动分析（Strengths / Weaknesses）全部限定于 "in this benchmark / in this controlled environment"，不做泛化能力宣称。
 
 ### 项目目录结构
 
@@ -187,8 +203,10 @@ Environment（[environment.ts](./src/engine/environment.ts)）持有智能体无
 │   ├── components/               RoomView · AgentConsole · Timeline
 │   └── lib/                      useAgentLoop.ts · storage.ts · exportBenchmark.ts
 ├── scripts/
+│   ├── integrity.ts              泄漏自检：PublicObservation 边界审计（npm run test:integrity）
+│   ├── benchmark.ts              12 项评测行为检查（npm run test:benchmark）
 │   ├── smoke.ts                  引擎冒烟测试：地面真值解可逃脱 + 非法动作路径
-│   └── pipeline.ts               完整 Mock 循环 → 指标 → 评分 → JSON/MD 报告
+│   └── pipeline.ts               完整 Mock 循环 → 指标 → 评分 → 隔离/报告/导出校验
 ├── .env.example                  环境变量示例（不含真实密钥）
 ├── next.config.ts · tsconfig.json · eslint.config.mjs · postcss.config.mjs
 └── package.json
@@ -206,14 +224,17 @@ Environment（[environment.ts](./src/engine/environment.ts)）持有智能体无
 
 **3. 评分与指标引擎**
 
-`classifyStep` 做步级分类，`computeMetrics` 聚合运行指标，`computeScore` 输出六维评分；`countSelfCorrections` 通过「先失败、后以不同取值成功」的模式识别自我纠错。
+`classifyStep` 做步级分类，`computeMetrics` 聚合运行指标，`computeScore` 输出六维评分（rationale 文本永不参与评分）；`detectSelfCorrections` 以严格行为模式识别自我纠错（失败 → 下一步不是同一动作的盲目重试 → 窗口内出现新的信息获取或对同一谜题换值重试 → 之后有实际状态进展），输出 `SelfCorrectionEvent`；`classifyFailure` 以纯规则输出失败分类（primary + secondary）。
 
 **4. 评测数据与报告**
 
-每次完成的运行（AI 或 Human）都写入浏览器 `localStorage`（键名 `ai-escape-lab:runs`，保留最近 100 条）。`/benchmark` 负责聚合，并可导出：
+每次完成的运行都带有 `runType`（`benchmark` / `demo` / `human`）写入浏览器 `localStorage`（键名 `ai-escape-lab:runs`，保留最近 100 条）。`/benchmark` 默认只聚合 Official Benchmark 视图（Demo / Human 为独立过滤视图，永不进入官方统计），并可导出：
 
-- **Export JSON** → `benchmark-report.json`（汇总 + 完整执行轨迹）
-- **Export Markdown** → `benchmark-report.md`（模型、总体结果、规则化优劣势、失败用例、完整轨迹）
+- **Export JSON** → `benchmark-report.json`（版本、模型、多 run 汇总 + 完整执行轨迹）
+- **Export Markdown** → `benchmark-report.md`（版本、总体结果、分房间聚合、规则化优劣势、失败用例、完整轨迹）
+- **Export CSV** → `benchmark-summary.csv`（每行一个正式 run，23 个字段）
+
+官方报告由 `buildReport()` 强制约束：demo/human run、多模型混合、跨 benchmark/prompt 版本混合都会**直接抛错**，不会静默合并。
 
 > 注意：评测数据保存在**浏览器本地**，不涉及服务端存储，因此换浏览器/清除数据后记录不会保留。
 
@@ -225,8 +246,10 @@ npm run build        # 生产构建
 npm start            # 启动生产服务（默认 3000 端口）
 
 # 本地验证（需要 Node >= 22.6 直接运行 TS）
+npm run test:integrity    # 泄漏自检：payload 禁止字段 + 初始观测不含密码/答案/映射
+npm run test:benchmark    # 12 项行为检查：可解性、隔离、评分、失败分类
 node scripts/smoke.ts     # 引擎：每个房间的地面真值解都能逃脱 + 非法动作路径
-node scripts/pipeline.ts  # 全链路：MockAgent 循环 → 指标 → 评分 → JSON/MD 报告
+node scripts/pipeline.ts  # 全链路：MockAgent 循环 → 指标 → 评分 → 隔离/报告/导出校验
 ```
 
 **部署**：本项目是标准 Next.js 15 应用，可直接部署到任意支持 Next.js 的平台（如 Vercel）。部署时需在平台的环境变量中配置 `QWEN_API_KEY` / `QWEN_MODEL` / `QWEN_BASE_URL`（不配置则只能使用 Demo Mode）。仓库当前**未包含 Dockerfile 或 CI 配置**。
@@ -237,7 +260,7 @@ node scripts/pipeline.ts  # 全链路：MockAgent 循环 → 指标 → 评分 �
 
 1. Fork 本仓库并新建分支：`git checkout -b feat/your-feature`。
 2. 保持改动聚焦，遵循现有代码风格与 TypeScript 严格模式。
-3. 提交前请确保通过：`npm run lint && npm run build`，并运行 `node scripts/smoke.ts`、`node scripts/pipeline.ts`。
+3. 提交前请确保通过：`npm run lint && npm run build`，并运行 `npm run test:integrity`、`npm run test:benchmark`、`node scripts/smoke.ts`、`node scripts/pipeline.ts`。
 4. 新增房间时，请提供声明式的 `RoomCase` 数据，并确保地面真值解可逃脱（含 `optimalActions` 与 `criticalObjects`）。
 5. 提交 Pull Request，并在描述中说明动机、改动范围与验证方式。
 
@@ -283,13 +306,15 @@ Current primary model under test: **Qwen** (via DashScope's OpenAI-compatible en
 - **Two modes**: `AI Mode` (watch the agent escape) and `Human Mode` (play the same chamber yourself, scored by the same engine).
 - **Live broadcast console**: step-by-step `THOUGHT / ACTION / OBSERVATION`, with pause / resume / single step / reset; auto-run paces steps at 500–1500 ms.
 - **Step-by-step replay**: `/replay/[runId]` with Prev / Next / Auto Play, observation snapshots, hypotheses and state deltas.
-- **Benchmark dashboard**: overall score, escape rate, invalid/repeat/self-correction rates, information efficiency, format reliability — with a dependency-free SVG radar chart, score bars and a per-room results table.
-- **Six-axis 0–100 scoring engine**: Success 40 / Action Efficiency 20 / Information Efficiency 15 / Reasoning Quality 10 / Self-Correction 10 / Rule Compliance 5.
-- **Report export**: one-click `benchmark-report.json` and `benchmark-report.md` (model, overall result, rule-based strengths/weaknesses, failure cases, full trajectory).
-- **Key-free fallback**: without `QWEN_API_KEY` the app runs in Demo Mode and is fully demoable offline.
+- **Benchmark dashboard**: Benchmark / Demo / Human filter views, multi-run statistics (mean/median score, escape rate per room), invalid/repeat/self-correction rates, information & exploration efficiency, format reliability — with a dependency-free SVG radar chart and per-room aggregate tables.
+- **Six-axis 0–100 scoring engine**: Success 40 / Action Efficiency 20 / Information Efficiency 15 / Self-Correction 10 / Rule Compliance 10 / Exploration Efficiency 5. Since v1.1 the subjective *Reasoning Quality* dimension is **gone** — `reason` is kept for replay only and is never scored.
+- **Strict run-type separation**: every record is typed `benchmark` (real Qwen) / `demo` (MockAgent) / `human`. Demo and Human runs **never** enter official statistics, reports or exports, and always carry visible "DEMO RUN — NOT A BENCHMARK RESULT" / "HUMAN RUN" badges.
+- **Official Benchmark Suite**: `/benchmark` runs 5 rooms × 1/3/5 runs (default 5) with START / PAUSE / CANCEL and live progress — **Qwen only**: without a configured key it reports "QWEN API NOT CONFIGURED" and never silently falls back to the mock agent.
+- **Report export**: one-click `benchmark-report.json`, `benchmark-report.md` and `benchmark-summary.csv` (one row per official run; versioned header with benchmark/prompt version, model, provider, run count).
+- **Key-free fallback**: without `QWEN_API_KEY` the app runs in Demo Mode and is fully demoable offline (demo runs only — official benchmarks require Qwen).
 - **Key safety**: the API key is read server-side only; the browser calls `/api/agent`, and the key never reaches the client bundle.
 - **Framework-decoupled engine**: rooms are **pure declarative data** (`RoomCase`) and the Puzzle Engine does not depend on React, making new rooms easy to add.
-- **Local verification scripts**: `scripts/smoke.ts` proves every room is escapable via its ground-truth solution; `scripts/pipeline.ts` runs the full Mock agent loop → metrics → score → report export.
+- **Local verification scripts**: `npm run test:integrity` (leak audit: agent payloads contain no ground-truth fields; initial observations contain no codes/answers/mappings), `npm run test:benchmark` (12 behavior checks: solvability, run isolation, rationale-independent scoring, failure taxonomy), plus `scripts/smoke.ts` and `scripts/pipeline.ts`.
 
 ### Demo / Screenshots
 
@@ -302,7 +327,7 @@ Start the dev server and walk the routes below:
 | `/` | Lab-style landing page: room selection, mode selection |
 | `/room/[id]?mode=ai` | Watch the agent escape (live THOUGHT / ACTION / OBSERVATION broadcast) |
 | `/room/[id]?mode=human` | Play the same chamber yourself; scored with the same engine |
-| `/benchmark` | Dashboard: overall score, escape rate, ratio metrics, radar, per-room table, JSON / Markdown export |
+| `/benchmark` | Dashboard: Benchmark / Demo / Human filter views, official Benchmark Suite, multi-run stats, radar, per-room aggregates, failure types, JSON / Markdown / CSV export |
 | `/replay/[runId]` | Step-by-step replay: Prev / Next / Auto Play, observation snapshots, hypotheses, state deltas |
 
 Room ids: `clockmaker`, `librarian`, `liar`, `red-herring`, `loop`.
@@ -355,18 +380,22 @@ npm start
 
 # Lint
 npm run lint
+
+# Benchmark credibility self-tests (leak boundary + 12 behavior checks)
+npm run test:integrity
+npm run test:benchmark
 ```
 
 **How to play**:
 
 1. Open `/` and pick a chamber (e.g. `clockmaker`).
 2. Click **AI Mode** to watch the agent escape (pause / single step / reset are available), or **Human** to play it yourself.
-3. When a run finishes, the record is written to browser `localStorage` (key `ai-escape-lab:runs`, most recent 100 runs kept).
-4. Open `/benchmark` to see aggregated results and export reports; open `/replay/[runId]` for a step-by-step replay.
+3. When a run finishes, the record is written to browser `localStorage` (key `ai-escape-lab:runs`, most recent 100 runs kept) with its run type (`benchmark` / `demo` / `human`).
+4. Open `/benchmark` to see the Official Benchmark view (or the Demo / Human filter views), run the Benchmark Suite, and export reports; open `/replay/[runId]` for a step-by-step replay.
 
 **Agent interaction model**:
 
-The Environment ([environment.ts](./src/engine/environment.ts)) holds ground truth the agent cannot read. Each turn the agent receives an `Observation` (visible objects, states, inventory, recent events, actions remaining) and must answer with **exactly one** structured action:
+The Environment ([environment.ts](./src/engine/environment.ts)) holds ground truth the agent cannot read. Each turn the agent receives only a **`PublicObservation`** (visible objects with their **public states**, inventory, recent events, actions remaining) plus public history; `rules`, `groundTruthSolution`, `criticalObjects`, hidden objects and internal `objectStates` **never enter the model payload**. E.g. the clock's internal state is "stopped at 10:15", but before `inspect clock` the agent only sees "stopped". The agent must answer with **exactly one** structured action:
 
 ```json
 { "action": "input", "target": "safe", "value": "1015", "reason": "The stopped time may encode the combination." }
@@ -396,14 +425,24 @@ Loop: **Observation → Reasoning → Action → Validation → State update →
 |---|---|
 | Success (did it escape) | 40 |
 | Action Efficiency (vs. optimal actions) | 20 |
-| Information Efficiency (share of critical-object actions) | 15 |
-| Reasoning Quality (hypothesis quality, minus repeat/critical penalties) | 10 |
-| Self-Correction (recovering from failures) | 10 |
-| Rule Compliance (legal actions, format-error penalty) | 5 |
+| Information Efficiency (critical-object coverage × irrelevant-noise penalty; repeats can never inflate it) | 15 |
+| Self-Correction (strict behavior test: failure → no identical retry → novel information gathering or different-value retry → real subsequent progress) | 10 |
+| Rule Compliance (legal actions, format-error penalty) | 10 |
+| Exploration Efficiency (irrelevant / repeated / invalid action ratios) | 5 |
 
-Each step is classified as `useful / irrelevant / invalid / repeated`, and critical mistakes and self-corrections are detected (see [scoring.ts](./src/engine/scoring.ts)).
+Each step is classified as `useful / irrelevant / invalid / repeated`. Critical mistakes, `SelfCorrectionEvent`s and failure classes are decided by pure rules — **no LLM judgment, and rationale text is never parsed or scored** (see [scoring.ts](./src/engine/scoring.ts)).
 
-**Benchmark summary metrics**: `escape_rate`, `average_score`, `average_actions`, `invalid_action_rate`, `repeated_action_rate`, `self_correction_rate`, `information_efficiency`, `format_reliability`.
+**Failure Taxonomy**: every failed run reports a `primary` + `secondary` failure type: `PREMATURE_COMMITMENT · REPEATED_FAILED_ACTION · OVER_EXPLORATION · INVALID_ACTIONS · FORMAT_FAILURE · NO_RECOVERY · ACTION_BUDGET_EXCEEDED · CRITICAL_MISTAKE`.
+
+**Benchmark summary metrics (multi-run)**: `total_runs`, `successful_runs`, `escape_rate`, `mean/median_score`, `mean/median_actions`, `invalid_action_rate`, `repeated_action_rate`, `self_correction_rate`, `information_efficiency`, `exploration_efficiency`, `critical_mistake_rate`, `format_reliability`, plus per-room groups (n/N and escape rate).
+
+### Benchmark credibility (v1.1 hardening)
+
+- **Observation boundary**: `PublicObservation` is the only world view a provider ever receives. `npm run test:integrity` audits the initial payload **and** the full ground-truth trajectory of all 5 rooms (forbidden fields, codes, answers, hidden objects); any leak → `exit(1)`.
+- **Run-type isolation**: `RunRecord.runType ∈ benchmark | demo | human`. `buildReport()` **throws** on demo/human runs, on mixed models, and on mixed benchmark/prompt versions; the dashboard defaults to the Official Benchmark view.
+- **Versioning**: every run stores `benchmarkVersion` and `promptVersion` (`src/config/benchmark.ts`, `src/agents/prompts.ts`), shown at the top of every report.
+- **Honest metadata**: token usage is recorded only when the API returns it — otherwise `null`, **never estimated**.
+- **Scoped claims**: automated Strengths/Weaknesses statements are always limited to "in this benchmark / in this controlled environment" — no generalized capability claims.
 
 ### Project structure
 
@@ -435,8 +474,10 @@ Each step is classified as `useful / irrelevant / invalid / repeated`, and criti
 │   ├── components/               RoomView · AgentConsole · Timeline
 │   └── lib/                      useAgentLoop.ts · storage.ts · exportBenchmark.ts
 ├── scripts/
+│   ├── integrity.ts              Leak audit: PublicObservation boundary (npm run test:integrity)
+│   ├── benchmark.ts              12 benchmark behavior checks (npm run test:benchmark)
 │   ├── smoke.ts                  Engine smoke test: ground-truth escape + illegal-action paths
-│   └── pipeline.ts               Full Mock loop → metrics → score → JSON/MD report
+│   └── pipeline.ts               Full Mock loop → metrics → score → isolation/report/export checks
 ├── .env.example                  Example env vars (no real secrets)
 ├── next.config.ts · tsconfig.json · eslint.config.mjs · postcss.config.mjs
 └── package.json
@@ -454,14 +495,17 @@ The `AIProvider` interface exposes a single `generateAction(context)` method, so
 
 **3. Scoring & metrics engine**
 
-`classifyStep` classifies each step, `computeMetrics` aggregates run metrics, and `computeScore` produces the six-axis score; `countSelfCorrections` detects self-correction via the "fail first, then succeed with a different value" pattern.
+`classifyStep` classifies each step, `computeMetrics` aggregates run metrics, and `computeScore` produces the six-axis score (rationale text is never scored); `detectSelfCorrections` applies a strict behavior pattern (failure → no identical blind retry → novel information gathering or a different-value retry within a window → real subsequent progress) and emits `SelfCorrectionEvent`s; `classifyFailure` produces the rule-based failure taxonomy (primary + secondary).
 
 **4. Benchmark data & reports**
 
-Every finished run (AI or Human) is stored in browser `localStorage` (key `ai-escape-lab:runs`, most recent 100 runs kept). `/benchmark` aggregates them and can export:
+Every finished run is stored in browser `localStorage` (key `ai-escape-lab:runs`, most recent 100 runs kept) with its `runType` (`benchmark` / `demo` / `human`). `/benchmark` defaults to the Official Benchmark view (Demo and Human are separate filter views, never aggregated into official stats) and can export:
 
-- **Export JSON** → `benchmark-report.json` (summary + full execution traces)
-- **Export Markdown** → `benchmark-report.md` (model, overall result, rule-based strengths/weaknesses, failure cases, full trajectory)
+- **Export JSON** → `benchmark-report.json` (versions, model, multi-run summary + full execution traces)
+- **Export Markdown** → `benchmark-report.md` (versions, overall result, per-room aggregates, rule-based strengths/weaknesses, failure cases, full trajectory)
+- **Export CSV** → `benchmark-summary.csv` (one row per official run, 23 columns)
+
+Official reports are enforced by `buildReport()`: demo/human runs, mixed models, or mixed benchmark/prompt versions **throw** instead of being silently merged.
 
 > Note: benchmark data lives in the **browser** only — there is no server-side storage, so records do not survive switching browsers or clearing site data.
 
@@ -473,8 +517,10 @@ npm run build        # Production build
 npm start            # Start production server (port 3000 by default)
 
 # Local verification (requires Node >= 22.6 to run TS directly)
+npm run test:integrity    # Leak audit: forbidden payload fields + no codes/answers in initial observations
+npm run test:benchmark    # 12 behavior checks: solvability, isolation, scoring, failure taxonomy
 node scripts/smoke.ts     # Engine: every room is escapable via ground truth + illegal-action paths
-node scripts/pipeline.ts  # End-to-end: MockAgent loop → metrics → score → JSON/MD report
+node scripts/pipeline.ts  # End-to-end: MockAgent loop → metrics → score → isolation/report/export checks
 ```
 
 **Deploy**: this is a standard Next.js 15 app and can be deployed to any platform that supports Next.js (e.g. Vercel). Configure `QWEN_API_KEY` / `QWEN_MODEL` / `QWEN_BASE_URL` in the platform's environment variables (without them, only Demo Mode is available). The repository currently contains **no Dockerfile and no CI configuration**.
@@ -485,7 +531,7 @@ Contributions of any kind are welcome (new rooms, new model integrations, metric
 
 1. Fork the repository and create a branch: `git checkout -b feat/your-feature`.
 2. Keep changes focused and follow the existing code style and TypeScript strict mode.
-3. Before submitting, make sure `npm run lint && npm run build` pass, and run `node scripts/smoke.ts` and `node scripts/pipeline.ts`.
+3. Before submitting, make sure `npm run lint && npm run build` pass, and run `npm run test:integrity`, `npm run test:benchmark`, `node scripts/smoke.ts` and `node scripts/pipeline.ts`.
 4. When adding a room, provide declarative `RoomCase` data and make sure the ground-truth solution escapes (including `optimalActions` and `criticalObjects`).
 5. Open a pull request describing the motivation, the scope of change and how you verified it.
 

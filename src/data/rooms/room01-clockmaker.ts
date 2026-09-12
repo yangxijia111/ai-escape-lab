@@ -15,6 +15,7 @@ export const room01: RoomCase = {
       name: "Broken clock",
       kind: "clock",
       initialState: "stopped at 10:15",
+      publicState: "stopped",
       inspect:
         "An ornate wall clock, its pendulum frozen. The hands are stopped at exactly 10:15. Fresh scratches surround the numeral X.",
       inspectByState: {
@@ -137,6 +138,11 @@ export const room01: RoomCase = {
   ],
   doors: [{ id: "door", name: "Sealed door", locked: true, pos: [84, 45] }],
   criticalObjects: ["clock", "painting", "desk", "safe", "note"],
+  evaluation: {
+    criticalObjects: ["clock", "painting", "desk", "safe"],
+    supportingObjects: ["note"],
+    irrelevantObjects: [],
+  },
   groundTruthSolution: [
     "inspect clock",
     "interact painting",

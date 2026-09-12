@@ -2,6 +2,16 @@ import type { AgentContext } from "./provider";
 
 export const MODEL_LABEL = "Qwen";
 
+/**
+ * Prompt version. Bump whenever the system/user prompt semantics change —
+ * official runs are only comparable within the same promptVersion.
+ */
+export const PROMPT_VERSION = "1.1.0";
+
+/** Sampling parameters used for official benchmark runs (recorded in RunMetadata). */
+export const QWEN_TEMPERATURE = 0.3;
+export const QWEN_MAX_TOKENS = 512;
+
 export function buildSystemPrompt(): string {
   return `You are ESCAPE-AGENT, an autonomous agent locked in an unknown room. Your only goal is to ESCAPE.
 

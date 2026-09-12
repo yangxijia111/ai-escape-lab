@@ -14,6 +14,7 @@ import { formatDuration } from "@/engine/replay";
 import RoomView from "@/components/RoomView/RoomView";
 import AgentConsole from "@/components/AgentConsole/AgentConsole";
 import Timeline from "@/components/Timeline/Timeline";
+import RunTypeBadge from "@/components/ui/RunTypeBadge";
 
 type Mode = "ai" | "human";
 
@@ -236,6 +237,10 @@ function RoomSession({
           )}
           {/* escaped overlay */}
           {loop.state.escaped && <EscapedOverlay mode={mode} modelLabel={modelLabel} />}
+          {/* failed overlay */}
+          {loop.state.failed && !loop.state.escaped && (
+            <FailedOverlay premature={loop.steps.some((s) => s.response.failureType === "PREMATURE_COMMITMENT")} />
+          )}
         </div>
 
         <div className="lg:col-span-2">
@@ -370,6 +375,25 @@ function EscapedOverlay({ mode, modelLabel }: { mode: Mode; modelLabel: string }
   );
 }
 
+function FailedOverlay({ premature }: { premature: boolean }) {
+  return (
+    <div className="anim-fade-up absolute inset-0 z-30 flex flex-col items-center justify-center bg-lab-bg/85 backdrop-blur-sm">
+      <div className="text-[11px] tracking-[0.5em] text-lab-dim uppercase">Experiment terminated</div>
+      <div className="mt-3 text-center text-4xl font-black tracking-[0.15em] text-lab-red uppercase sm:text-5xl" style={{ textShadow: "0 0 12px rgba(240,85,61,0.5)" }}>
+        {premature ? "WRONG CHOICE" : "ESCAPE FAILED"}
+      </div>
+      <div className="mt-2 text-sm font-bold tracking-[0.3em] text-lab-red/90 uppercase">
+        {premature ? "— EXPERIMENT FAILED —" : "— EXPERIMENT FAILED —"}
+      </div>
+      <div className="mt-3 max-w-sm px-4 text-center text-[11px] leading-relaxed text-lab-dim">
+        {premature
+          ? "PREMATURE_COMMITMENT: an irreversible rule was violated. This run cannot be recovered — reset to try again."
+          : "The action budget was exhausted or the agent could not recover. Reset to try again."}
+      </div>
+    </div>
+  );
+}
+
 /* ── result card ──────────────────────────────────────────── */
 
 import type { RunRecord } from "@/engine/types";
@@ -378,12 +402,24 @@ function ResultCard({ run, roomTitle, modelLabel, mode }: { run: RunRecord; room
   const m = run.metrics;
   return (
     <div className="anim-fade-up border border-lab-line bg-lab-panel">
-      <div className="flex flex-wrap items-center justify-between border-b border-lab-line px-4 py-2 text-[11px] tracking-[0.3em] uppercase">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-lab-line px-4 py-2 text-[11px] tracking-[0.3em] uppercase">
         <span className="text-lab-dim">ESCAPE RESULT · {roomTitle}</span>
-        <span className={m.success ? "text-lab-green text-glow-green" : "text-lab-red"}>
-          {m.success ? "ESCAPED" : "FAILED"}
+        <span className="flex items-center gap-2">
+          <RunTypeBadge runType={run.runType} />
+          <span className={m.success ? "text-lab-green text-glow-green" : "text-lab-red"}>
+            {m.success ? "ESCAPED" : "FAILED"}
+          </span>
         </span>
       </div>
+      {!m.success && run.failure && (
+        <div className="border-b border-lab-line px-4 py-1.5 text-[10px] tracking-[0.2em] uppercase">
+          <span className="text-lab-dim">Failure: </span>
+          <span className="text-lab-red">{run.failure.primary}</span>
+          {run.failure.secondary.length > 0 && (
+            <span className="text-lab-dim"> · {run.failure.secondary.join(" · ")}</span>
+          )}
+        </div>
+      )}
       <div className="grid gap-4 p-4 md:grid-cols-[auto_1fr_auto]">
         <div className="text-center">
           <div className="text-[10px] tracking-[0.3em] text-lab-dim uppercase">{mode === "human" ? "YOU" : modelLabel}</div>

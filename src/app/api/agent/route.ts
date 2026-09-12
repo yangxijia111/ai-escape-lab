@@ -39,6 +39,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       action: decision.action,
       formatErrors: decision.formatErrors,
+      usage: decision.usage ?? null,
       model: config.model,
     });
   } catch (e) {

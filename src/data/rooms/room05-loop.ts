@@ -146,6 +146,11 @@ export const room05: RoomCase = {
   ],
   doors: [{ id: "door", name: "Barred door", locked: true, pos: [8, 45] }],
   criticalObjects: ["wall_symbols", "statue_shelf", "dustcloth", "plaque"],
+  evaluation: {
+    criticalObjects: ["wall_symbols", "statue_shelf", "dustcloth", "plaque"],
+    supportingObjects: [],
+    irrelevantObjects: ["orrery", "star_chart"],
+  },
   groundTruthSolution: [
     "inspect wall_symbols",
     "inspect statue_shelf",

@@ -39,6 +39,7 @@ export function cloneState(s: RoomState): RoomState {
     hiddenObjects: [...s.hiddenObjects],
     inventory: [...s.inventory],
     objectStates: { ...s.objectStates },
+    publicStates: { ...s.publicStates },
     puzzleStates: { ...s.puzzleStates },
     doorStates: { ...s.doorStates },
     firedRules: [...s.firedRules],
@@ -48,10 +49,12 @@ export function cloneState(s: RoomState): RoomState {
 
 export function initialState(room: RoomCase): RoomState {
   const objectStates: Record<string, string> = {};
+  const publicStates: Record<string, string> = {};
   const discovered: string[] = [];
   const hidden: string[] = [];
   for (const o of room.objects) {
     objectStates[o.id] = o.initialState;
+    publicStates[o.id] = o.publicState ?? o.initialState;
     if (o.hidden) hidden.push(o.id);
     else discovered.push(o.id);
   }
@@ -63,6 +66,7 @@ export function initialState(room: RoomCase): RoomState {
     hiddenObjects: hidden,
     inventory: [],
     objectStates,
+    publicStates,
     puzzleStates: {},
     doorStates,
     firedRules: [],
@@ -74,10 +78,14 @@ export function initialState(room: RoomCase): RoomState {
   };
 }
 
+/**
+ * Build the PublicObservation — the ONLY data an agent may see.
+ * Object states come from `publicStates`, never from internal `objectStates`.
+ */
 export function buildObservation(room: RoomCase, state: RoomState, recentEvents: string[]): Observation {
   const visible = state.discoveredObjects.map((id) => {
     const o = room.objects.find((x) => x.id === id)!;
-    return { id, name: o.name, kind: o.kind, state: state.objectStates[id] ?? o.initialState };
+    return { id, name: o.name, kind: o.kind, state: state.publicStates[id] ?? o.publicState ?? "unknown" };
   });
   return {
     room: room.title,
@@ -127,6 +135,8 @@ function applyEffect(effect: Effect, room: RoomCase, state: RoomState, changes: 
       const prev = state.objectStates[effect.target];
       if (effect.value && prev !== effect.value) {
         state.objectStates[effect.target] = effect.value;
+        // state changes caused by the agent's own action become public knowledge
+        state.publicStates[effect.target] = effect.value;
         const o = room.objects.find((x) => x.id === effect.target);
         changes.push(`${o?.name ?? effect.target}: ${prev} → ${effect.value}`);
       }
@@ -140,6 +150,7 @@ function applyEffect(effect: Effect, room: RoomCase, state: RoomState, changes: 
         state.hiddenObjects.splice(idx, 1);
         state.discoveredObjects.push(id);
         const o = room.objects.find((x) => x.id === id);
+        if (o) state.publicStates[id] = o.publicState ?? o.initialState;
         changes.push(`Discovered: ${o?.name ?? id}`);
       }
       break;
@@ -180,6 +191,11 @@ function applyEffect(effect: Effect, room: RoomCase, state: RoomState, changes: 
       changes.push("ESCAPED");
       break;
     }
+    case "fail": {
+      state.failed = true;
+      changes.push("EXPERIMENT FAILED");
+      break;
+    }
     case "setMessage":
       break;
   }
@@ -202,11 +218,24 @@ export function executeAction(
       result: { success: false, message: "You already escaped.", invalid: true, events: [], stateChanges: [] },
     };
   }
+  if (state.failed) {
+    return {
+      state,
+      result: {
+        success: false,
+        message: "The experiment has already failed. This room can no longer be completed.",
+        invalid: true,
+        events: [],
+        stateChanges: [],
+        failed: true,
+      },
+    };
+  }
   if (state.actionCount >= state.maxActions) {
     state.failed = true;
     return {
       state,
-      result: { success: false, message: "No actions remaining. Experiment failed.", invalid: true, events: [], stateChanges: [], failed: true },
+      result: { success: false, message: "No actions remaining. Experiment failed.", invalid: true, events: [], stateChanges: [], failed: true, failureType: "ACTION_BUDGET_EXCEEDED" },
     };
   }
 
@@ -245,6 +274,8 @@ export function executeAction(
       const o = room.objects.find((x) => x.id === action.target);
       if (!state.inspectedObjects.includes(action.target)) state.inspectedObjects.push(action.target);
       const st = state.objectStates[action.target];
+      // inspecting reveals the true internal state publicly
+      if (st !== undefined) state.publicStates[action.target] = st;
       const text = o?.inspectByState?.[st ?? ""] ?? o?.inspect ?? (isDoor ? `The door is ${state.doorStates[action.target]}.` : "Nothing unusual.");
       return {
         state,
@@ -290,10 +321,12 @@ export function executeAction(
   // Apply every matched rule.
   let critical = false;
   let allSuccess = true;
+  let failureType: ActionResult["failureType"];
   for (const rule of matched) {
     if (rule.success === false) allSuccess = false;
     state.firedRules.push(rule.id);
     if (rule.critical) critical = true;
+    if (rule.failureType) failureType = rule.failureType;
     if (rule.when?.consumeItem) {
       for (const it of rule.when.consumeItem) {
         const idx = state.inventory.indexOf(it);
@@ -318,6 +351,7 @@ export function executeAction(
       escaped: state.escaped,
       failed: state.failed,
       criticalMistake: critical || undefined,
+      failureType,
     },
   };
 }

@@ -21,11 +21,12 @@ export class RemoteQwenProvider implements AIProvider {
     const data = (await res.json()) as {
       action?: AgentDecision["action"];
       formatErrors?: number;
+      usage?: AgentDecision["usage"];
       error?: string;
     };
     if (!res.ok || !data.action) {
       throw new Error(data.error ?? `Agent API failed (${res.status})`);
     }
-    return { action: data.action, formatErrors: data.formatErrors ?? 0 };
+    return { action: data.action, formatErrors: data.formatErrors ?? 0, usage: data.usage };
   }
 }

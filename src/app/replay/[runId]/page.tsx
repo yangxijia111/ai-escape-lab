@@ -4,7 +4,12 @@ import Link from "next/link";
 import { use, useEffect, useRef, useState } from "react";
 import { getRun } from "@/lib/storage";
 import { formatAction, formatDuration } from "@/engine/replay";
-import type { RunRecord } from "@/engine/types";
+import type { RunRecord, RunType } from "@/engine/types";
+import RunTypeBadge from "@/components/ui/RunTypeBadge";
+
+function runTypeOf(r: RunRecord): RunType {
+  return r.runType ?? (r.agent === "qwen" ? "benchmark" : r.agent === "mock" ? "demo" : "human");
+}
 
 export default function ReplayPage({ params }: { params: Promise<{ runId: string }> }) {
   return <ReplayInner runId={use(params).runId} />;
@@ -59,7 +64,10 @@ function ReplayInner({ runId }: { runId: string }) {
       {/* header */}
       <div className="flex flex-wrap items-center justify-between gap-3 border border-lab-line bg-lab-panel px-4 py-3">
         <div>
-          <p className="text-[10px] tracking-[0.35em] text-lab-dim uppercase">Replay · {run.runId}</p>
+          <p className="flex items-center gap-2 text-[10px] tracking-[0.35em] text-lab-dim uppercase">
+            Replay · {run.runId}
+            <RunTypeBadge runType={runTypeOf(run)} />
+          </p>
           <h1 className="mt-0.5 text-xl font-bold tracking-[0.15em] uppercase">
             {run.roomTitle} <span className="text-lab-dim">—</span>{" "}
             <span className={run.metrics.success ? "text-lab-green" : "text-lab-red"}>
@@ -149,9 +157,12 @@ function ReplayInner({ runId }: { runId: string }) {
           <div className="border border-lab-line bg-lab-panel p-4">
             <Section>AGENT DECISION</Section>
             {step.reason && (
-              <p className="mt-2 border-l-2 border-lab-amber/60 pl-3 text-xs leading-relaxed text-lab-text/85 italic">
-                &ldquo;{step.reason}&rdquo;
-              </p>
+              <div className="mt-2">
+                <p className="mb-1 text-[9px] tracking-[0.25em] text-lab-dim uppercase">Rationale · replay only — never scored</p>
+                <p className="border-l-2 border-lab-amber/60 pl-3 text-xs leading-relaxed text-lab-text/85 italic">
+                  &ldquo;{step.reason}&rdquo;
+                </p>
+              </div>
             )}
             <p className="mt-3 text-xs">
               <span className="tracking-[0.2em] text-lab-dim uppercase">Action: </span>

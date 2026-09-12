@@ -6,9 +6,11 @@ import {
   executeAction,
   initialState,
 } from "@/engine/environment";
-import { classifyStep, computeMetrics, computeScore } from "@/engine/scoring";
+import { classifyFailure, classifyStep, computeMetrics, computeScore } from "@/engine/scoring";
 import { scoreDeltaForStep } from "@/engine/replay";
 import { newRunId, saveRun } from "@/lib/storage";
+import { BENCHMARK_VERSION } from "@/config/benchmark";
+import { PROMPT_VERSION, QWEN_MAX_TOKENS, QWEN_TEMPERATURE } from "@/agents/prompts";
 import type { AIProvider } from "@/agents/provider";
 import type {
   ActionResult,
@@ -18,6 +20,7 @@ import type {
   RoomCase,
   RoomState,
   RunRecord,
+  RunType,
   StepRecord,
 } from "@/engine/types";
 
@@ -72,6 +75,7 @@ export function useAgentLoop(opts: LoopOptions): AgentLoop {
   const runningRef = useRef(false);
   const pausedRef = useRef(false);
   const formatErrorsRef = useRef(0);
+  const usageRef = useRef({ promptTokens: 0, completionTokens: 0, totalTokens: 0, sawUsage: false });
   const startedAtRef = useRef<number>(Date.now());
   const finishedRef = useRef(false);
   stateRef.current = state;
@@ -84,27 +88,50 @@ export function useAgentLoop(opts: LoopOptions): AgentLoop {
     (finalState: RoomState, finalSteps: StepRecord[]) => {
       if (finishedRef.current) return;
       finishedRef.current = true;
+      const finishedAt = Date.now();
       const metrics = computeMetrics(room, finalSteps, {
         formatErrors: formatErrorsRef.current,
-        durationMs: Date.now() - startedAtRef.current,
+        durationMs: finishedAt - startedAtRef.current,
       });
       const score = computeScore(room, metrics, finalSteps);
+      const failure = classifyFailure(metrics, finalSteps);
+      // Demo/Human runs are strictly separated from official benchmark runs.
+      const runType: RunType = agent === "qwen" ? "benchmark" : agent === "mock" ? "demo" : "human";
+      const isQwen = agent === "qwen";
+      const u = usageRef.current;
       const record: RunRecord = {
         runId,
         benchmark: "AI ESCAPE LAB",
+        runType,
         model: modelLabel,
         agent,
         roomId: room.id,
         roomTitle: room.title,
-        timestamp: Date.now(),
+        timestamp: finishedAt,
+        metadata: {
+          benchmarkVersion: BENCHMARK_VERSION,
+          promptVersion: PROMPT_VERSION,
+          provider: agent,
+          model: modelLabel,
+          temperature: isQwen ? QWEN_TEMPERATURE : null,
+          maxTokens: isQwen ? QWEN_MAX_TOKENS : null,
+          promptTokens: u.sawUsage ? u.promptTokens : null,
+          completionTokens: u.sawUsage ? u.completionTokens : null,
+          totalTokens: u.sawUsage ? u.totalTokens : null,
+          formatRetries: formatErrorsRef.current,
+          startedAt: startedAtRef.current,
+          finishedAt,
+        },
         metrics,
         score,
+        failure,
         steps: finalSteps,
       };
       saveRun(record);
       setFinalRun(record);
       setStatus("finished");
       runningRef.current = false;
+      void finalState;
     },
     [room, agent, modelLabel, runId]
   );
@@ -157,6 +184,7 @@ export function useAgentLoop(opts: LoopOptions): AgentLoop {
 
       if (
         nextState.escaped ||
+        nextState.failed ||
         nextState.actionCount >= nextState.maxActions ||
         consecutiveInvalid >= MAX_CONSECUTIVE_INVALID
       ) {
@@ -197,6 +225,12 @@ export function useAgentLoop(opts: LoopOptions): AgentLoop {
     try {
       const decision = await provider.generateAction(ctx);
       formatErrorsRef.current += decision.formatErrors;
+      if (decision.usage) {
+        usageRef.current.sawUsage = true;
+        usageRef.current.promptTokens += decision.usage.promptTokens ?? 0;
+        usageRef.current.completionTokens += decision.usage.completionTokens ?? 0;
+        usageRef.current.totalTokens += decision.usage.totalTokens ?? 0;
+      }
       setStatus("acting");
       applyAction(decision.action, provider.kind);
       if (!finishedRef.current) setStatus("idle");
@@ -248,6 +282,7 @@ export function useAgentLoop(opts: LoopOptions): AgentLoop {
     pausedRef.current = false;
     finishedRef.current = false;
     formatErrorsRef.current = 0;
+    usageRef.current = { promptTokens: 0, completionTokens: 0, totalTokens: 0, sawUsage: false };
     startedAtRef.current = Date.now();
     const fresh = initialState(room);
     setState(fresh);

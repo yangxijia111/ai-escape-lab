@@ -89,10 +89,16 @@ export const room03: RoomCase = {
       target: "chest_a",
       when: { objectState: { chest_a: "closed" } },
       message:
-        "The lid rises — empty. Instantly the chest slams shut and the iron fuses into a seamless block. Note A crumbles to ash. A wrong choice. The room remembers.",
+        "The lid rises — empty. Instantly ALL THREE chests slam shut and fuse into seamless blocks of iron. The notes crumble to ash. WRONG CHOICE — the room keeps its promise: choose once. The vault door will never open now. EXPERIMENT FAILED.",
       once: true,
       critical: true,
-      effects: [{ type: "setState", target: "chest_a", value: "sealed" }],
+      failureType: "PREMATURE_COMMITMENT",
+      effects: [
+        { type: "setState", target: "chest_a", value: "sealed" },
+        { type: "setState", target: "chest_b", value: "sealed" },
+        { type: "setState", target: "chest_c", value: "sealed" },
+        { type: "fail" },
+      ],
     },
     {
       id: "r03-open-b-wrong",
@@ -100,10 +106,16 @@ export const room03: RoomCase = {
       target: "chest_b",
       when: { objectState: { chest_b: "closed" } },
       message:
-        "The lid rises — empty. The chest slams shut and seals forever. Note B crumbles to ash. A wrong choice. The room remembers.",
+        "The lid rises — empty. Instantly ALL THREE chests slam shut and fuse into seamless blocks of iron. The notes crumble to ash. WRONG CHOICE — the room keeps its promise: choose once. The vault door will never open now. EXPERIMENT FAILED.",
       once: true,
       critical: true,
-      effects: [{ type: "setState", target: "chest_b", value: "sealed" }],
+      failureType: "PREMATURE_COMMITMENT",
+      effects: [
+        { type: "setState", target: "chest_a", value: "sealed" },
+        { type: "setState", target: "chest_b", value: "sealed" },
+        { type: "setState", target: "chest_c", value: "sealed" },
+        { type: "fail" },
+      ],
     },
     {
       id: "r03-open-c-correct",
@@ -134,6 +146,11 @@ export const room03: RoomCase = {
   ],
   doors: [{ id: "door", name: "Vault door", locked: true, pos: [84, 52] }],
   criticalObjects: ["chest_a", "chest_b", "chest_c", "engraving"],
+  evaluation: {
+    criticalObjects: ["chest_a", "chest_b", "chest_c", "engraving"],
+    supportingObjects: [],
+    irrelevantObjects: [],
+  },
   groundTruthSolution: [
     "inspect chest_a",
     "inspect chest_b",

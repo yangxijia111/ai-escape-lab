@@ -1,7 +1,7 @@
 import { isAgentAction } from "@/engine/environment";
 import type { AgentAction } from "@/engine/types";
-import type { AgentContext, AgentDecision, AIProvider } from "./provider";
-import { buildSystemPrompt, buildUserPrompt } from "./prompts";
+import type { AgentContext, AgentDecision, AIProvider, TokenUsage } from "./provider";
+import { buildSystemPrompt, buildUserPrompt, QWEN_MAX_TOKENS, QWEN_TEMPERATURE } from "./prompts";
 
 /**
  * QwenProvider — OpenAI-compatible chat completions.
@@ -40,16 +40,22 @@ export class QwenProvider implements AIProvider {
 
   async generateAction(ctx: AgentContext): Promise<AgentDecision> {
     let formatErrors = 0;
+    const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
       { role: "system", content: buildSystemPrompt() },
       { role: "user", content: buildUserPrompt(ctx) },
     ];
 
     for (let attempt = 0; attempt <= MAX_FORMAT_RETRIES; attempt++) {
-      const text = await this.chat(messages);
+      const { text, usage: u } = await this.chat(messages);
+      if (u) {
+        usage.promptTokens = (usage.promptTokens ?? 0) + (u.promptTokens ?? 0);
+        usage.completionTokens = (usage.completionTokens ?? 0) + (u.completionTokens ?? 0);
+        usage.totalTokens = (usage.totalTokens ?? 0) + (u.totalTokens ?? 0);
+      }
       const parsed = parseAction(text);
       if (parsed) {
-        return { action: parsed, formatErrors };
+        return { action: parsed, formatErrors, usage: u ? usage : undefined };
       }
       formatErrors += 1;
       // Feed the format error back and retry (max 2 retries).
@@ -71,12 +77,13 @@ export class QwenProvider implements AIProvider {
         reason: "Model produced invalid format twice; falling back to a safe inspection.",
       },
       formatErrors,
+      usage: usage.totalTokens ? usage : undefined,
     };
   }
 
   private async chat(
     messages: { role: string; content: string }[]
-  ): Promise<string> {
+  ): Promise<{ text: string; usage: TokenUsage | null }> {
     const res = await fetch(`${this.config.baseURL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
@@ -86,8 +93,8 @@ export class QwenProvider implements AIProvider {
       body: JSON.stringify({
         model: this.config.model,
         messages,
-        temperature: 0.3,
-        max_tokens: 512,
+        temperature: QWEN_TEMPERATURE,
+        max_tokens: QWEN_MAX_TOKENS,
       }),
     });
     if (!res.ok) {
@@ -96,8 +103,16 @@ export class QwenProvider implements AIProvider {
     }
     const data = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
-    return data.choices?.[0]?.message?.content ?? "";
+    const usage: TokenUsage | null = data.usage
+      ? {
+          promptTokens: data.usage.prompt_tokens ?? null,
+          completionTokens: data.usage.completion_tokens ?? null,
+          totalTokens: data.usage.total_tokens ?? null,
+        }
+      : null;
+    return { text: data.choices?.[0]?.message?.content ?? "", usage };
   }
 }
 
