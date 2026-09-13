@@ -281,17 +281,17 @@ export function reportToMarkdown(report: BenchmarkReport): string {
  */
 export function reportToCSV(report: BenchmarkReport): string {
   const header = [
-    "run_id", "benchmark_version", "prompt_version", "provider", "model",
+    "run_id", "suite_id", "benchmark_version", "prompt_version", "provider", "model",
     "room_id", "room_title", "success", "score", "actions", "max_actions",
     "useful_actions", "irrelevant_actions", "invalid_actions", "repeated_actions",
-    "critical_mistakes", "self_corrections", "format_errors", "duration_ms",
+    "critical_mistakes", "self_corrections", "self_correction_opportunities", "format_errors", "duration_ms",
     "information_efficiency", "exploration_efficiency", "primary_failure", "timestamp",
   ];
   const rows = report.runs.map((r) => [
-    r.runId, r.metadata.benchmarkVersion, r.metadata.promptVersion, r.metadata.provider, r.metadata.model,
+    r.runId, r.metadata.suiteId ?? r.suiteId ?? "", r.metadata.benchmarkVersion, r.metadata.promptVersion, r.metadata.provider, r.metadata.model,
     r.roomId, r.roomTitle, r.metrics.success ? "true" : "false", r.score.total, r.metrics.actions, r.metrics.maxActions,
     r.metrics.usefulActions, r.metrics.irrelevantActions, r.metrics.invalidActions, r.metrics.repeatedActions,
-    r.metrics.criticalMistakes, r.metrics.selfCorrections, r.metrics.formatErrors, r.metrics.durationMs,
+    r.metrics.criticalMistakes, r.metrics.selfCorrections, r.metrics.selfCorrectionOpportunities, r.metrics.formatErrors, r.metrics.durationMs,
     r.metrics.informationEfficiency, r.metrics.explorationEfficiency, r.failure?.primary ?? "", new Date(r.timestamp).toISOString(),
   ]);
   return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");

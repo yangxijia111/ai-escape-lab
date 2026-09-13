@@ -114,6 +114,12 @@ check(md.includes("Rationale text is never scored"), "MD documents that rational
 check(!md.toLowerCase().includes("reasoning quality"), "MD has no Reasoning Quality dimension");
 check(json.includes('"runType": "benchmark"'), "JSON marks runs as benchmark");
 check(csv.split("\n")[0].includes("information_efficiency") && csv.split("\n").length === 6, "CSV has header + 5 run rows incl. efficiency columns");
+const csvHeader = csv.split("\n")[0].split(",");
+check(
+  csvHeader.length === 25 && csvHeader.includes("suite_id") && csvHeader.includes("self_correction_opportunities") &&
+    csvHeader.includes("useful_actions") && csvHeader.includes("irrelevant_actions"),
+  "CSV header has 25 columns incl. suite_id + self_correction_opportunities"
+);
 
 const allEscaped = demoRuns.every((r) => r.metrics.success);
 check(allEscaped, "all rooms escaped via mock pipeline");
